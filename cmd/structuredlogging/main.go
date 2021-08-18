@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/blendle/zapdriver"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"log"
 	"net/http"
 	"os"
@@ -20,7 +21,8 @@ func run() error {
 
 	// retrieves our project id from the gcp metadata server
 	projectID := ""
-	if metadata.OnGCE() {
+	onGCE := metadata.OnGCE()
+	if onGCE {
 		id, err := metadata.ProjectID()
 		if err != nil {
 			return fmt.Errorf("metadata.ProjectID(): %v", err)
@@ -31,7 +33,7 @@ func run() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/stdlogger", stdlogger())
 	mux.HandleFunc("/structuredlogger", structuredlogger(projectID))
-	mux.HandleFunc("/uberzaplogger", uberzaplogger(projectID))
+	mux.HandleFunc("/uberzaplogger", uberzaplogger(projectID, onGCE))
 
 	// cloud run sets the PORT env variable for us to listen on
 	port := os.Getenv("PORT")
@@ -73,12 +75,21 @@ func structuredlogger(projectID string) http.HandlerFunc {
 // uberzaplogger showcases how using a third party logger introduces various quality of life updates from the structuredlogger
 // the only downside is that its another third party library you are learning. overall the api surface is pretty straight forward with uber-zap
 // we are just using a wrapper around zap to provide the correct configurations for gcp logging.
-func uberzaplogger(projectID string) http.HandlerFunc {
+func uberzaplogger(projectID string, onGCE bool) http.HandlerFunc {
 
-	// create our uber zap configuration
-	config := zapdriver.NewProductionConfig()
-	// set the min logging level to debug for this demo
-	config.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	var config zap.Config
+	// if on the cloud we will use a production config
+	if onGCE {
+		// create our uber zap configuration
+		config = zapdriver.NewProductionConfig()
+		// set the min logging level to debug for this demo
+		config.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	} else {
+		// running locally we will use a human-readable output
+		config = zapdriver.NewDevelopmentConfig()
+		config.Encoding = "console"
+		config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	}
 
 	// creates our logger instance
 	clientLogger, err := config.Build()

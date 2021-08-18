@@ -200,3 +200,80 @@ This accomplishes a number of things. First lets look at what the output looks l
 
 Now within GCP here is an example of what log entries with various severities looks like.
 ![severity mapping](./structuredoutput.png)
+
+As you can see the value-add structured logging has here is pretty awesome. In addition, adding the cloud trace and span
+id's into the log statements even powers up more gcp products to work in a more insightful way. We will cover cloud
+trace + open telemetry in a latter post to get even more quality of life upgrades.
+
+## Third party structured logger (Uber Zap)
+
+Using a third party logger such as uber zap + zapdriver provides us with a really nice developer experience. We get the
+best of both worlds around ease of use + structured log output. It will produce the same structured log output like
+before, but just provide an easier way to configure its behavior without you having to write a whole bunch of custom
+code for it.
+
+To setup uber zap lets take a look at some code
+
+```go
+
+package main
+
+import (
+	"fmt"
+	"github.com/blendle/zapdriver"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"log"
+	"net/http"
+)
+
+func uberzaplogger(projectID string, onGCE bool) http.HandlerFunc {
+
+	var config zap.Config
+	// if on the cloud we will use a production config
+	if onGCE {
+		// create our uber zap configuration
+		config = zapdriver.NewProductionConfig()
+		// set the min logging level to debug for this demo
+		config.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
+	} else {
+		// running locally we will use a human-readable output
+		config = zapdriver.NewDevelopmentConfig()
+		config.Encoding = "console"
+		config.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	}
+
+	// creates our logger instance
+	clientLogger, err := config.Build()
+	if err != nil {
+		log.Fatalf("zap.config.Build(): %v", err)
+	}
+
+	wrapTraceContext := func(header string) *zap.SugaredLogger {
+		traceID, spanID, sampled := deconstructXCloudTraceContext(header)
+		fields := zapdriver.TraceContext(traceID, spanID, sampled, projectID)
+		setFields := clientLogger.With(fields...)
+		return setFields.Sugar()
+	}
+
+	return func(writer http.ResponseWriter, request *http.Request) {
+		logger := wrapTraceContext(request.Header.Get("X-Cloud-Trace-Context"))
+		logger.Debug("debug message")
+		logger.Info("info message")
+		logger.Warn("warn message")
+		logger.Error("error message")
+		// calling any below will cause application to quite from the behavior of uber zap
+		// logger.DPanic("critical message")
+		// logger.Panic("alert message")
+		// logger.Fatal("EMERGENCY message")
+
+		fmt.Fprintf(writer, "<h1> uber zap is saying hello %q", request.UserAgent())
+
+	}
+}
+
+
+```
+
+Overall at the end of the day my goal is to be the most productive and efficient as possible, I heavily lean to option 3
+with using uber zap for all of my logging needs due to ease of configuration and integration into the gcp platform.
