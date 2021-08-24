@@ -4,13 +4,12 @@ go 1.16
 
 require (
 	cloud.google.com/go v0.93.3
-	cloud.google.com/go/firestore v1.5.0
+	cloud.google.com/go/trace v0.1.0 // indirect
+	github.com/GoogleCloudPlatform/opentelemetry-operations-go v1.0.0-RC2.0.20210816152642-29dd0bfc39f0
+	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace v1.0.0-RC2.0.20210816152642-29dd0bfc39f0
 	github.com/blendle/zapdriver v1.3.1
-	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
+	go.opentelemetry.io/otel v1.0.0-RC2
+	go.opentelemetry.io/otel/sdk v1.0.0-RC2
 	go.uber.org/zap v1.19.0
-	golang.org/x/net v0.0.0-20210813160813-60bc85c4be6d // indirect
-	golang.org/x/oauth2 v0.0.0-20210817223510-7df4dd6e12ab // indirect
-	golang.org/x/sys v0.0.0-20210819135213-f52c844e1c1c // indirect
-	golang.org/x/text v0.3.7 // indirect
-	google.golang.org/genproto v0.0.0-20210818220304-27ea9cc85d9f // indirect
+	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
 )
