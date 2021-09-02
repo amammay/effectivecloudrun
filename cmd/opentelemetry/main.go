@@ -2,16 +2,16 @@ package main
 
 import (
 	"cloud.google.com/go/compute/metadata"
+	"cloud.google.com/go/firestore"
 	"context"
 	"fmt"
-	cloudtrace "github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace"
-	cloudprop "github.com/GoogleCloudPlatform/opentelemetry-operations-go/propagator"
-	"github.com/blendle/zapdriver"
-	"go.opentelemetry.io/otel"
-	prop "go.opentelemetry.io/otel/propagation"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.uber.org/zap"
+	"github.com/amammay/effectivecloudrun/internal/logx"
+	"github.com/gorilla/mux"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"golang.org/x/sync/errgroup"
+	"google.golang.org/api/option"
+	"google.golang.org/grpc"
 	"log"
 	"net/http"
 	"os"
@@ -20,7 +20,26 @@ import (
 	"time"
 )
 
-type teardown func() error
+const (
+	AppName = "opentelemetry"
+)
+
+type server struct {
+	router    *mux.Router
+	logger    *logx.AppLogger
+	firestore *firestore.Client
+	bin       *binClient
+}
+
+func (s *server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	s.router.ServeHTTP(writer, request)
+}
+
+func newServer(logger *logx.AppLogger, firestoreClient *firestore.Client, binClient *binClient) *server {
+	s := &server{router: mux.NewRouter(), logger: logger, firestore: firestoreClient, bin: binClient}
+	s.routes()
+	return s
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -30,7 +49,7 @@ func main() {
 
 func run() error {
 	// retrieves our project id from the gcp metadata server
-	projectID := ""
+	projectID := "mammay-labs"
 	onGCE := metadata.OnGCE()
 	if onGCE {
 		id, err := metadata.ProjectID()
@@ -40,17 +59,18 @@ func run() error {
 		projectID = id
 	}
 
-	// create our uber zap configuration
-	config := zapdriver.NewProductionConfig()
-	config.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
-	clientLogger, err := config.Build()
+	loggerClient, err := logx.NewLogger(projectID, onGCE)
 	if err != nil {
-		return fmt.Errorf("config.Build(): %v", err)
+		return fmt.Errorf("logx.NewLogger(): %v", err)
 	}
+
+	logger := loggerClient.Sugar()
+	defer logger.Sync()
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	defer cancelFunc()
-	logger := clientLogger.Sugar()
+
+	// setup tracing, defer the teardown of the tracer to flush it
 	tracingTeardown, err := initTracing(ctx, logger, projectID)
 	if err != nil {
 		return fmt.Errorf("initTracing(): %v", err)
@@ -62,6 +82,19 @@ func run() error {
 		}
 	}()
 
+	unaryInterceptor := grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor())
+	streamInterceptor := grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor())
+	firestoreClient, err := firestore.NewClient(ctx, projectID, option.WithGRPCDialOption(unaryInterceptor), option.WithGRPCDialOption(streamInterceptor))
+	if err != nil {
+		return fmt.Errorf("firestore.NewClient(): %v", err)
+	}
+
+	httpClient := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+	httpClient.Transport = otelhttp.NewTransport(httpClient.Transport)
+	binClient := NewBinClient(httpClient, "https://httpbin.org/")
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -69,9 +102,8 @@ func run() error {
 
 	httpServer := &http.Server{
 		Addr:    ":" + port,
-		Handler: nil,
+		Handler: newServer(loggerClient, firestoreClient, binClient),
 	}
-	httpServer.RegisterOnShutdown(cancelFunc)
 	// setup our shutdown signal
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(
@@ -95,52 +127,9 @@ func run() error {
 		logger.Info("server has shutdown gracefully")
 		return nil
 	})
-	logger.Infof("starting server on %q", httpServer.Addr)
+	logger.Infof("starting server on %s", httpServer.Addr)
 	if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
 		return fmt.Errorf("httpServer.ListenAndServe(): %v", err)
 	}
 	return g.Wait()
-}
-
-type errorProcessing struct {
-	logger *zap.SugaredLogger
-}
-
-func (e *errorProcessing) Handle(err error) {
-	if err != nil {
-		e.logger.Errorw("global otel error detected", "error", err)
-	}
-}
-
-// initTracing will setup open telemetry with exporting results directly to gcp
-func initTracing(ctx context.Context, logger *zap.SugaredLogger, projectID string) (teardown, error) {
-
-	// set an error handler to bubble up any errors that otel might throw
-	otel.SetErrorHandler(&errorProcessing{logger: logger})
-
-	// set a text map propagator that is able to parse a variety of http headers, in our case CloudTraceFormatPropagator will handle
-	// the header of X-Cloud-Trace-Context that gcp will set from the GFE
-	otel.SetTextMapPropagator(prop.NewCompositeTextMapPropagator(
-		cloudprop.CloudTraceFormatPropagator{},
-		prop.TraceContext{},
-		prop.Baggage{},
-	))
-
-	// create cloudtrace exporter
-	exporter, err := cloudtrace.New(cloudtrace.WithProjectID(projectID), cloudtrace.WithContext(ctx))
-	if err != nil {
-		return nil, fmt.Errorf("cloudtrace.New(): %v", err)
-	}
-
-	batchSpanProcessor := sdktrace.NewBatchSpanProcessor(exporter)
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(batchSpanProcessor))
-	otel.SetTracerProvider(tp)
-
-	return func() error {
-		err := tp.Shutdown(ctx)
-		if err != nil {
-			return fmt.Errorf("tp.Shutdown(): %v", err)
-		}
-		return nil
-	}, nil
 }

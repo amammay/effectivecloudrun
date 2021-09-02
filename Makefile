@@ -8,3 +8,6 @@ deploy-metadata:
 deploy-logging:
 	gcloud run deploy logging --image=$$(ko publish --preserve-import-paths ./cmd/structuredlogging ) --allow-unauthenticated;
 
+.PHONY: deploy-opentelemetry
+deploy-opentelemetry:
+	gcloud run deploy opentelemetry --image=$$(ko publish --preserve-import-paths ./cmd/opentelemetry ) --allow-unauthenticated;
