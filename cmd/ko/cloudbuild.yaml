@@ -1,6 +1,6 @@
 steps:
   #  using our ko builder we will build our application that lives in ./cmd/ko
-  - name: gcr.io/$PROJECT_ID/ko¬
+  - name: gcr.io/$PROJECT_ID/ko
     entrypoint: /bin/sh
     env:
       - 'KO_DOCKER_REPO=gcr.io/$PROJECT_ID'
